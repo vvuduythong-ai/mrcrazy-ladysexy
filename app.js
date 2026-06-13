@@ -1,16 +1,20 @@
 /**
- * app.js — state, password gate, view routing, rendering.
+ * app.js — single-page interactive dashboard.
  *
- * Data flow: user types password (kept in sessionStorage) -> fetch the Apps Script
- * Web App per view -> render. Derived metrics are computed server-side (Aggregate)
- * and lightly re-formatted here. Recommendations come from recommend.js.
+ * One page: Overview (KPIs + overall funnel + trend) always on top, then an
+ * "Explore" section with a Group-by toggle (Product / Pillar / TA). Clicking a row
+ * drills into a detail view (that group's funnel + sub-breakdown + content list).
+ *
+ * Everything below the trend is computed CLIENT-SIDE from the `ads` endpoint
+ * (one row per ad with all metrics + identity). The daily trend comes from `overview`.
  */
 (function () {
   'use strict';
 
   var API = (window.APP_CONFIG && window.APP_CONFIG.APPS_SCRIPT_URL) || '';
   var PWD_KEY = 'mcals_pwd';
-  var state = { view: 'overview', range: '30d', settings: {}, detail: null };
+  var state = { range: '30d', groupBy: 'product_slug', detail: null, settings: {} };
+  var cache = {}; // range -> { ads: res, overview: res }
 
   // ---- helpers ----------------------------------------------------------
   function $(sel) { return document.querySelector(sel); }
@@ -23,6 +27,7 @@
   function pwd() { return sessionStorage.getItem(PWD_KEY) || ''; }
   function setPwd(v) { sessionStorage.setItem(PWD_KEY, v); }
   function clearPwd() { sessionStorage.removeItem(PWD_KEY); }
+  function numv(v) { var x = Number(v); return isNaN(x) ? 0 : x; }
 
   function fmtVnd(v) {
     if (v === null || v === undefined || v === '' || isNaN(Number(v))) return 'N/A';
@@ -49,30 +54,19 @@
     $('#app').hidden = true;
     $('#gate').hidden = false;
     var e = $('#gateErr');
-    // err can be a boolean (legacy) or a custom message string.
     if (typeof err === 'string' && err) { e.textContent = err; e.hidden = false; }
     else { e.hidden = !err; }
   }
-  function showApp() {
-    $('#gate').hidden = true;
-    $('#app').hidden = false;
-  }
+  function showApp() { $('#gate').hidden = true; $('#app').hidden = false; }
 
   function tryLogin(p) {
     setPwd(p);
-    return api('overview', state.range).then(function (res) {
-      if (res && res.ok) {
-        state.settings = res.settings || {};
-        showApp();
-        render(); // re-fetch current view
-        return true;
-      }
+    return api('ads', state.range).then(function (res) {
+      if (res && res.ok) { showApp(); load(); return true; }
       clearPwd();
-      // Distinguish a real wrong-password from a server/data error.
-      var msg = (res && res.error === 'unauthorized')
+      showGate(res && res.error === 'unauthorized'
         ? 'Sai mật khẩu.'
-        : 'Lỗi máy chủ: ' + ((res && res.error) || 'không rõ') + '. Kiểm tra deployment.';
-      showGate(msg);
+        : 'Lỗi máy chủ: ' + ((res && res.error) || 'không rõ') + '. Kiểm tra deployment.');
       return false;
     }).catch(function (e) {
       clearPwd();
@@ -82,178 +76,187 @@
     });
   }
 
-  // ---- rendering --------------------------------------------------------
+  // ---- data load --------------------------------------------------------
   function setStatus(msg) {
     var s = $('#status');
     if (!msg) { s.hidden = true; s.textContent = ''; return; }
     s.hidden = false; s.textContent = msg;
   }
 
-  // In-memory cache of the last good response per view+range, so switching tabs is
-  // instant: paint the cached view immediately, then refresh silently in the background.
-  var viewCache = {};
-
-  function paint(host, res) {
-    state.settings = res.settings || state.settings;
-    $('#genAt').textContent = 'Cập nhật: ' + new Date(res.generatedAt).toLocaleString('vi-VN');
-    $('#kpiTarget').textContent = fmtVnd(state.settings.cost_per_message_target || 80000);
-    host.innerHTML = '';
-    var r = { overview: renderOverview, funnel: renderFunnel, pillar: renderBreakdown,
-      product: renderBreakdown, ta: renderBreakdown, ads: renderAds }[state.view];
-    r(host, res.data);
-  }
-
-  function render() {
+  function load() {
     var host = $('#view');
-    // Product drill-down takes over the Product tab when a product is selected.
-    if (state.view === 'product' && state.detail) { return openProductDetail(state.detail.slug); }
-    var key = state.view + '|' + state.range;
-    var cached = viewCache[key];
-    if (cached) { paint(host, cached); setStatus('Đang cập nhật…'); }
+    var c = cache[state.range];
+    if (c && c.ads) { renderPage(); setStatus('Đang cập nhật…'); }
     else { host.innerHTML = '<div class="loading">Đang tải…</div>'; setStatus(''); }
 
-    api(state.view, state.range).then(function (res) {
-      if (!res || !res.ok) { if (!cached) showGate(true); setStatus(''); return; }
-      viewCache[key] = res;
-      paint(host, res);
-      setStatus('');
-    }).catch(function (e) {
-      setStatus('');
-      if (!cached) host.innerHTML = '<div class="loading error">Lỗi tải dữ liệu: ' + e + '</div>';
-    });
+    Promise.all([api('ads', state.range), api('overview', state.range)])
+      .then(function (r) {
+        var ads = r[0], ov = r[1];
+        if (!ads || !ads.ok) {
+          if (!c) showGate(ads && ads.error === 'unauthorized' ? 'Sai mật khẩu.' : true);
+          setStatus(''); return;
+        }
+        state.settings = ads.settings || state.settings;
+        cache[state.range] = { ads: ads, overview: (ov && ov.ok) ? ov : null };
+        renderPage();
+        setStatus('');
+      })
+      .catch(function (e) {
+        setStatus('');
+        if (!c) host.innerHTML = '<div class="loading error">Lỗi tải dữ liệu: ' + e + '</div>';
+      });
   }
 
-  function renderOverview(host, data) {
-    var t = data.totals || {};
-    var target = Number(state.settings.cost_per_message_target || 80000);
-    var cpcClass = (t.cost_per_conv != null && t.cost_per_conv <= target) ? 'good' : 'bad';
+  // ---- client aggregation ----------------------------------------------
+  function sumRows(rows) {
+    var t = { spend: 0, impressions: 0, clicks: 0, link_clicks: 0, conv_started: 0,
+      conv_replied: 0, welcome_views: 0, new_contacts: 0, returning_contacts: 0,
+      total_contacts: 0, purchases: 0, purchase_value: 0 };
+    (rows || []).forEach(function (r) {
+      Object.keys(t).forEach(function (k) { t[k] += numv(r[k]); });
+    });
+    t.ctr = t.impressions > 0 ? +(t.clicks / t.impressions * 100).toFixed(2) : 0;
+    t.reply_rate = t.conv_started > 0 ? +(t.conv_replied / t.conv_started).toFixed(3) : 0;
+    t.cost_per_conv = t.conv_started > 0 ? Math.round(t.spend / t.conv_started) : null;
+    t.roas = (t.purchase_value > 0 && t.spend > 0) ? +(t.purchase_value / t.spend).toFixed(2) : null;
+    return t;
+  }
+  function groupByField(rows, field) {
+    var map = {};
+    (rows || []).forEach(function (r) {
+      var k = String(r[field] || '(không rõ)');
+      (map[k] = map[k] || []).push(r);
+    });
+    return Object.keys(map).map(function (k) {
+      var t = sumRows(map[k]);
+      t.key = k;
+      t.name = field === 'product_slug' ? (map[k][0].product_name || k) : k;
+      t._rows = map[k];
+      return t;
+    }).sort(function (a, b) { return b.spend - a.spend; });
+  }
 
+  var GROUPS = [
+    { field: 'product_slug', label: 'Sản phẩm' },
+    { field: 'pillar', label: 'Pillar' },
+    { field: 'ta', label: 'TA' }
+  ];
+  function groupLabel(field) {
+    for (var i = 0; i < GROUPS.length; i++) if (GROUPS[i].field === field) return GROUPS[i].label;
+    return field;
+  }
+
+  // ---- page render ------------------------------------------------------
+  function adsRows() { return (cache[state.range] && cache[state.range].ads.data) || []; }
+  function overviewData() { var c = cache[state.range]; return (c && c.overview && c.overview.data) || null; }
+
+  function renderPage() {
+    var host = $('#view');
+    host.innerHTML = '';
+    $('#genAt').textContent = 'Cập nhật: ' + new Date().toLocaleString('vi-VN');
+    $('#kpiTarget').textContent = fmtVnd(state.settings.cost_per_message_target || 80000);
+
+    var rows = adsRows();
+    var t = sumRows(rows);
+    var target = Number(state.settings.cost_per_message_target || 80000);
+
+    // KPI cards
     var cards = el('div', 'cards');
     cards.appendChild(card('Tổng chi', fmtVnd(t.spend)));
-    cards.appendChild(card('Tin nhắn (mới/cũ)', fmtNum(t.conv_started),
-      fmtNum(t.new_contacts) + ' mới · ' + fmtNum(t.returning_contacts) + ' cũ'));
+    cards.appendChild(card('Tin nhắn', fmtNum(t.conv_started), 'reply ' + fmtPct(t.reply_rate)));
     cards.appendChild(card('Cost / tin nhắn', fmtVnd(t.cost_per_conv),
-      'mục tiêu ' + fmtVnd(target), cpcClass));
+      'mục tiêu ' + fmtVnd(target), (t.cost_per_conv != null && t.cost_per_conv <= target) ? 'good' : 'bad'));
     cards.appendChild(card('Đơn (Meta)', t.purchases ? fmtNum(t.purchases) : 'N/A',
       t.roas != null ? 'ROAS ' + t.roas : 'ROAS N/A'));
     host.appendChild(cards);
 
-    var p = el('div', 'panel');
-    p.appendChild(el('h2', null, 'Xu hướng cost/tin nhắn theo ngày'));
-    var wrap = el('div', 'chart-wrap'); wrap.appendChild(el('canvas')).id = 'trendChart';
-    p.appendChild(wrap);
-    host.appendChild(p);
-    Charts.trendLine('trendChart', data.trend || []);
+    // Overall funnel + diagnosis
+    host.appendChild(funnelPanel('Phễu Messenger (toàn bộ)', t));
+
+    // Trend
+    var ov = overviewData();
+    if (ov && ov.trend && ov.trend.length) {
+      var p = el('div', 'panel');
+      p.appendChild(el('h2', null, 'Xu hướng cost/tin nhắn theo ngày'));
+      var w = el('div', 'chart-wrap'); w.appendChild(el('canvas')).id = 'trendChart';
+      p.appendChild(w); host.appendChild(p);
+      Charts.trendLine('trendChart', ov.trend);
+    }
+
+    // Data hygiene
+    var unmapped = rows.filter(function (r) { return !r.mapped; });
+    if (unmapped.length) {
+      var hw = el('div', 'panel warn-block');
+      hw.appendChild(el('h2', null, '⚠ ' + unmapped.length + ' ad sai tên (chưa map được sản phẩm) — sửa tên để vào đúng nhóm'));
+      hw.appendChild(tableFrom(unmapped, [
+        { k: 'ad_name', t: 'Ad name', fmt: id, left: true },
+        { k: 'campaign_name', t: 'Campaign', fmt: id, left: true },
+        { k: 'spend', t: 'Chi', fmt: fmtVnd }
+      ]));
+      host.appendChild(hw);
+    }
+
+    // Explore section (swappable: list <-> detail)
+    var explore = el('div'); explore.id = 'explore';
+    host.appendChild(explore);
+    renderExplore();
   }
 
-  function renderFunnel(host, data) {
-    var f = data.messenger || [];
-    var max = Math.max.apply(null, f.map(function (s) { return s.value; }).concat([1]));
-    var p = el('div', 'panel');
-    p.appendChild(el('h2', null, 'Phễu Messenger'));
-    var fn = el('div', 'funnel');
-    var prev = null;
-    f.forEach(function (s) {
-      var row = el('div', 'funnel-row');
-      row.appendChild(el('div', null, s.stage));
-      var barWrap = el('div');
-      var bar = el('div', 'funnel-bar');
-      bar.style.width = Math.max(2, (s.value / max) * 100) + '%';
-      barWrap.appendChild(bar);
-      row.appendChild(barWrap);
-      var drop = prev && prev > 0 ? ' · ' + Math.round((1 - s.value / prev) * 100) + '% rớt' : '';
-      row.appendChild(el('div', 'funnel-meta', fmtNum(s.value) + drop));
-      fn.appendChild(row);
-      prev = s.value;
+  function renderExplore() {
+    var box = $('#explore');
+    if (!box) return;
+    box.innerHTML = '';
+    if (state.detail) { renderDetail(box, state.detail.by, state.detail.key); return; }
+
+    // Group-by toggle
+    var bar = el('div', 'segbar');
+    bar.appendChild(el('span', 'seglabel', 'Xem theo:'));
+    GROUPS.forEach(function (g) {
+      var b = el('button', 'seg' + (g.field === state.groupBy ? ' active' : ''), g.label);
+      b.addEventListener('click', function () { state.groupBy = g.field; renderExplore(); });
+      bar.appendChild(b);
     });
-    p.appendChild(fn);
-    p.appendChild(el('p', 'muted', 'Reply rate: ' + fmtPct(data.reply_rate) +
-      ' · Đơn = Meta ghi nhận (thường thiếu).'));
-    host.appendChild(p);
-  }
+    box.appendChild(bar);
 
-  function renderBreakdown(host, rows) {
-    var labelKey = 'key';
-    // charts
-    var p = el('div', 'panel');
-    p.appendChild(el('h2', null, 'Cost/tin nhắn theo ' + viewLabel()));
-    var wrap = el('div', 'chart-wrap'); wrap.appendChild(el('canvas')).id = 'bdChart';
-    p.appendChild(wrap);
-    host.appendChild(p);
+    var groups = groupByField(adsRows(), state.groupBy);
 
-    var p2 = el('div', 'panel');
-    p2.appendChild(el('h2', null, 'Chia chi tiêu'));
-    var wrap2 = el('div', 'chart-wrap'); wrap2.appendChild(el('canvas')).id = 'shareChart';
-    p2.appendChild(wrap2);
-    host.appendChild(p2);
+    var chartP = el('div', 'panel');
+    chartP.appendChild(el('h2', null, 'Cost/tin nhắn theo ' + groupLabel(state.groupBy)));
+    var w = el('div', 'chart-wrap'); w.appendChild(el('canvas')).id = 'exploreChart';
+    chartP.appendChild(w); box.appendChild(chartP);
 
-    // table — on the Product tab, rows are clickable to drill into detail.
-    var isProduct = state.view === 'product';
-    if (isProduct) host.appendChild(el('p', 'muted hint', '👆 Bấm vào một sản phẩm để xem pillar / content / phễu chi tiết.'));
-    var onClick = isProduct ? function (row) { openProductDetail(row.key); } : null;
-    host.appendChild(tableFrom(rows, [
-      { k: labelKey, t: viewLabel(), fmt: function (v) { return v || '(không rõ)'; }, left: true },
+    box.appendChild(el('p', 'muted hint', '👆 Bấm một dòng để xem phễu, pillar & content chi tiết.'));
+    box.appendChild(tableFrom(groups, [
+      { k: 'name', t: groupLabel(state.groupBy), fmt: id, left: true },
       { k: 'spend', t: 'Chi', fmt: fmtVnd },
       { k: 'conv_started', t: 'Tin nhắn', fmt: fmtNum },
       { k: 'cost_per_conv', t: 'Cost/tin', fmt: fmtVnd },
       { k: 'reply_rate', t: 'Reply', fmt: fmtPct },
       { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true }
-    ], onClick));
+    ], function (row) { state.detail = { by: state.groupBy, key: row.key }; renderExplore(); }));
 
-    Charts.breakdownBar('bdChart', rows, labelKey);
-    Charts.spendShare('shareChart', rows, labelKey);
+    Charts.breakdownBar('exploreChart', groups, 'name');
 
-    var recs = Recommend.summarize(rows, state.settings, labelKey);
-    if (recs.length) host.appendChild(recsPanel(recs));
+    var recs = Recommend.summarize(groups, state.settings, 'name');
+    if (recs.length) box.appendChild(recsPanel(recs));
   }
 
-  // ---- product drill-down ----------------------------------------------
-  function openProductDetail(slug) {
-    state.detail = { slug: slug };
-    var host = $('#view');
-    var key = 'ads|' + state.range;
-    var cached = viewCache[key];
-    if (cached) renderProductDetail(host, slug, cached.data);
-    else { host.innerHTML = '<div class="loading">Đang tải…</div>'; setStatus(''); }
-    api('ads', state.range).then(function (res) {
-      if (!res || !res.ok) { if (!cached) showGate(true); return; }
-      viewCache[key] = res;
-      if (state.detail && state.detail.slug === slug) renderProductDetail(host, slug, res.data);
-    }).catch(function (e) {
-      if (!cached) host.innerHTML = '<div class="loading error">Lỗi tải dữ liệu: ' + e + '</div>';
-    });
-  }
+  function renderDetail(box, by, key) {
+    var rows = adsRows().filter(function (r) { return String(r[by]) === String(key); });
 
-  function funnelDiagnosis(t) {
-    // Identify where the messenger funnel leaks worst and phrase it.
-    var target = Number(state.settings.cost_per_message_target || 80000);
-    var bench = Number(state.settings.reply_rate_benchmark || 0.4);
-    if (t.conv_started === 0) return { level: 'warn', text: 'Chưa có tin nhắn nào — chưa đủ dữ liệu để chẩn đoán phễu.' };
-    if (t.reply_rate < bench) return { level: 'fix', text: 'Rớt mạnh ở khâu KHÁCH NHẮN LẠI: reply rate ' + fmtPct(t.reply_rate) + ' < benchmark ' + fmtPct(bench) + '. Soi lời chào / tốc độ rep / chất lượng traffic.' };
-    if (t.cost_per_conv != null && t.cost_per_conv > target) return { level: 'fix', text: 'Tin nhắn đắt: ' + fmtVnd(t.cost_per_conv) + ' > mục tiêu ' + fmtVnd(target) + '. Khâu Click→Tin nhắn chưa hiệu quả (creative/đối tượng).' };
-    if (t.purchases === 0 && t.conv_replied >= 3) return { level: 'fix', text: 'Hội thoại tốt nhưng 0 đơn (Meta ghi nhận). Soi khâu CHỐT/giá — hoặc thiếu attribution.' };
-    return { level: 'scale', text: 'Phễu khỏe: tin nhắn rẻ, reply rate tốt. Cân nhắc tăng ngân sách / nhân bản.' };
-  }
+    var back = el('button', 'backlink', '← Quay lại ' + groupLabel(by));
+    back.addEventListener('click', function () { state.detail = null; renderExplore(); });
+    box.appendChild(back);
 
-  function renderProductDetail(host, slug, adsRows) {
-    var rows = (adsRows || []).filter(function (r) { return String(r.product_slug) === String(slug); });
-    host.innerHTML = '';
-
-    // Back link
-    var back = el('button', 'backlink', '← Quay lại Sản phẩm');
-    back.addEventListener('click', function () { state.detail = null; render(); });
-    host.appendChild(back);
-
-    var name = (rows[0] && rows[0].product_name) || slug || '(không rõ)';
-    var t = sumRows(rows);
-    host.appendChild(el('h2', 'detail-title', name + '  ·  ' + slug));
+    var name = by === 'product_slug' ? ((rows[0] && rows[0].product_name) || key) : key;
+    box.appendChild(el('h2', 'detail-title', groupLabel(by) + ': ' + name));
 
     if (!rows.length) {
-      host.appendChild(el('p', 'muted', 'Không có ad nào cho sản phẩm này trong khoảng thời gian đã chọn.'));
+      box.appendChild(el('p', 'muted', 'Không có ad nào trong khoảng thời gian đã chọn.'));
       return;
     }
 
-    // KPI cards
+    var t = sumRows(rows);
     var target = Number(state.settings.cost_per_message_target || 80000);
     var cards = el('div', 'cards');
     cards.appendChild(card('Tổng chi', fmtVnd(t.spend)));
@@ -262,11 +265,45 @@
       'mục tiêu ' + fmtVnd(target), (t.cost_per_conv != null && t.cost_per_conv <= target) ? 'good' : 'bad'));
     cards.appendChild(card('Đơn (Meta)', t.purchases ? fmtNum(t.purchases) : 'N/A',
       t.roas != null ? 'ROAS ' + t.roas : 'ROAS N/A'));
-    host.appendChild(cards);
+    box.appendChild(cards);
 
-    // Funnel for this product + diagnosis
-    var fp = el('div', 'panel');
-    fp.appendChild(el('h2', null, 'Phễu của sản phẩm này'));
+    box.appendChild(funnelPanel('Phễu của ' + groupLabel(by).toLowerCase() + ' này', t));
+
+    // Secondary breakdown: product -> by pillar; pillar/ta -> by product
+    var subField = by === 'product_slug' ? 'pillar' : 'product_slug';
+    var subs = groupByField(rows, subField);
+    var sp = el('div', 'panel');
+    sp.appendChild(el('h2', null, 'Theo ' + groupLabel(subField) + ' (trong nhóm này)'));
+    box.appendChild(sp);
+    box.appendChild(tableFrom(subs, [
+      { k: 'name', t: groupLabel(subField), fmt: id, left: true },
+      { k: 'spend', t: 'Chi', fmt: fmtVnd },
+      { k: 'conv_started', t: 'Tin nhắn', fmt: fmtNum },
+      { k: 'cost_per_conv', t: 'Cost/tin', fmt: fmtVnd },
+      { k: 'reply_rate', t: 'Reply', fmt: fmtPct },
+      { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true }
+    ]));
+
+    // Content / ad list
+    var cp = el('div', 'panel');
+    cp.appendChild(el('h2', null, 'Content / Ad (' + rows.length + ')'));
+    box.appendChild(cp);
+    box.appendChild(tableFrom(rows, [
+      { k: 'ad_name', t: 'Ad', fmt: id, left: true },
+      { k: 'format', t: 'Format', fmt: dash, left: true },
+      { k: 'pillar', t: 'Pillar', fmt: dash, left: true },
+      { k: 'spend', t: 'Chi', fmt: fmtVnd },
+      { k: 'conv_started', t: 'Tin nhắn', fmt: fmtNum },
+      { k: 'cost_per_conv', t: 'Cost/tin', fmt: fmtVnd },
+      { k: 'reply_rate', t: 'Reply', fmt: fmtPct },
+      { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true }
+    ]));
+  }
+
+  // ---- funnel -----------------------------------------------------------
+  function funnelPanel(title, t) {
+    var p = el('div', 'panel');
+    p.appendChild(el('h2', null, title));
     var stages = [
       { stage: 'Impressions', value: t.impressions },
       { stage: 'Clicks', value: t.clicks },
@@ -287,74 +324,28 @@
       row.appendChild(el('div', 'funnel-meta', fmtNum(s.value) + drop));
       fn.appendChild(row); prev = s.value;
     });
-    fp.appendChild(fn);
+    p.appendChild(fn);
     var dg = funnelDiagnosis(t);
     var diag = el('div', 'rec'); diag.style.marginTop = '12px';
     diag.appendChild(el('span', 'pill ' + (dg.level === 'scale' ? 'scale' : dg.level === 'fix' ? 'fix' : 'warn'), 'Phễu'));
     diag.appendChild(el('div', 'body', dg.text));
-    fp.appendChild(diag);
-    host.appendChild(fp);
-
-    // Breakdown by Pillar (for this product)
-    var pillars = groupBy(rows, 'pillar');
-    var pp = el('div', 'panel');
-    pp.appendChild(el('h2', null, 'Theo Pillar (sản phẩm này)'));
-    pp.appendChild(el('p', 'muted', 'Pillar nào ra tin nhắn rẻ nhất cho sản phẩm này.'));
-    host.appendChild(pp);
-    host.appendChild(tableFrom(pillars, [
-      { k: 'key', t: 'Pillar', fmt: function (v) { return v || '—'; }, left: true },
-      { k: 'spend', t: 'Chi', fmt: fmtVnd },
-      { k: 'conv_started', t: 'Tin nhắn', fmt: fmtNum },
-      { k: 'cost_per_conv', t: 'Cost/tin', fmt: fmtVnd },
-      { k: 'reply_rate', t: 'Reply', fmt: fmtPct },
-      { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true }
-    ]));
-
-    // Content list (every ad under this product)
-    var cp = el('div', 'panel');
-    cp.appendChild(el('h2', null, 'Content / Ad (' + rows.length + ')'));
-    host.appendChild(cp);
-    host.appendChild(tableFrom(rows, [
-      { k: 'ad_name', t: 'Ad', fmt: function (v) { return v; }, left: true },
-      { k: 'format', t: 'Format', fmt: function (v) { return v || '—'; }, left: true },
-      { k: 'pillar', t: 'Pillar', fmt: function (v) { return v || '—'; }, left: true },
-      { k: 'spend', t: 'Chi', fmt: fmtVnd },
-      { k: 'conv_started', t: 'Tin nhắn', fmt: fmtNum },
-      { k: 'cost_per_conv', t: 'Cost/tin', fmt: fmtVnd },
-      { k: 'reply_rate', t: 'Reply', fmt: fmtPct },
-      { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true }
-    ]));
+    p.appendChild(diag);
+    return p;
   }
 
-  function renderAds(host, rows) {
-    var unmapped = rows.filter(function (r) { return !r.mapped; });
-    if (unmapped.length) {
-      var w = el('div', 'panel warn-block');
-      w.appendChild(el('h2', null, '⚠ Data hygiene — ' + unmapped.length + ' ad cần sửa tên (mapped=FALSE)'));
-      w.appendChild(tableFrom(unmapped, [
-        { k: 'ad_name', t: 'Ad name', fmt: function (v) { return v; }, left: true },
-        { k: 'campaign_name', t: 'Campaign', fmt: function (v) { return v; }, left: true },
-        { k: 'spend', t: 'Chi', fmt: fmtVnd }
-      ]));
-      host.appendChild(w);
-    }
-    host.appendChild(tableFrom(rows, [
-      { k: 'ad_name', t: 'Ad', fmt: function (v) { return v; }, left: true },
-      { k: 'format', t: 'Format', fmt: function (v) { return v || '—'; }, left: true },
-      { k: 'pillar', t: 'Pillar', fmt: function (v) { return v || '—'; }, left: true },
-      { k: 'ta', t: 'TA', fmt: function (v) { return v || '—'; }, left: true },
-      { k: 'spend', t: 'Chi', fmt: fmtVnd },
-      { k: 'conv_started', t: 'Tin nhắn', fmt: fmtNum },
-      { k: 'cost_per_conv', t: 'Cost/tin', fmt: fmtVnd },
-      { k: 'reply_rate', t: 'Reply', fmt: fmtPct },
-      { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true }
-    ]));
+  function funnelDiagnosis(t) {
+    var target = Number(state.settings.cost_per_message_target || 80000);
+    var bench = Number(state.settings.reply_rate_benchmark || 0.4);
+    if (t.conv_started === 0) return { level: 'warn', text: 'Chưa có tin nhắn — chưa đủ dữ liệu để chẩn đoán phễu.' };
+    if (t.reply_rate < bench) return { level: 'fix', text: 'Rớt mạnh ở KHÁCH NHẮN LẠI: reply rate ' + fmtPct(t.reply_rate) + ' < benchmark ' + fmtPct(bench) + '. Soi lời chào / tốc độ rep / chất lượng traffic.' };
+    if (t.cost_per_conv != null && t.cost_per_conv > target) return { level: 'fix', text: 'Tin nhắn đắt: ' + fmtVnd(t.cost_per_conv) + ' > mục tiêu ' + fmtVnd(target) + '. Khâu Click→Tin nhắn chưa hiệu quả (creative/đối tượng).' };
+    if (t.purchases === 0 && t.conv_replied >= 3) return { level: 'fix', text: 'Hội thoại tốt nhưng 0 đơn (Meta ghi nhận). Soi khâu CHỐT/giá — hoặc thiếu attribution.' };
+    return { level: 'scale', text: 'Phễu khỏe: tin nhắn rẻ, reply rate tốt. Cân nhắc tăng ngân sách / nhân bản.' };
   }
 
   // ---- small render utils ----------------------------------------------
-  function viewLabel() {
-    return { pillar: 'Pillar', product: 'Sản phẩm', ta: 'TA' }[state.view] || state.view;
-  }
+  function id(v) { return v; }
+  function dash(v) { return v || '—'; }
   function card(label, value, sub, cls) {
     var c = el('div', 'card');
     c.appendChild(el('div', 'label', label));
@@ -371,15 +362,15 @@
   function recsPanel(recs) {
     var p = el('div', 'panel');
     p.appendChild(el('h2', null, 'Đề xuất tối ưu'));
-    var box = el('div', 'recs');
+    var boxx = el('div', 'recs');
     recs.forEach(function (r) {
       var cls = { CUT: 'cut', FIX_CONV: 'fix', FIX_CLOSE: 'fix', SCALE: 'scale' }[r.tag] || 'warn';
       var row = el('div', 'rec');
       row.appendChild(el('span', 'pill ' + cls, r.tag));
       row.appendChild(el('div', 'body', '<b>' + r.label + '</b>' + r.reason));
-      box.appendChild(row);
+      boxx.appendChild(row);
     });
-    p.appendChild(box);
+    p.appendChild(boxx);
     return p;
   }
   function tableFrom(rows, cols, onRowClick) {
@@ -392,13 +383,9 @@
     var tbody = el('tbody');
     (rows || []).forEach(function (row) {
       var tr = el('tr');
-      if (onRowClick) {
-        tr.className = 'clickable';
-        tr.addEventListener('click', function () { onRowClick(row); });
-      }
+      if (onRowClick) { tr.className = 'clickable'; tr.addEventListener('click', function () { onRowClick(row); }); }
       cols.forEach(function (c) {
-        var raw = row[c.k];
-        var val = c.fmt ? c.fmt(raw, row) : raw;
+        var val = c.fmt ? c.fmt(row[c.k], row) : row[c.k];
         var td = el('td');
         if (c.html) td.innerHTML = val; else td.textContent = val;
         if (c.left) td.style.textAlign = 'left';
@@ -408,32 +395,6 @@
     });
     table.appendChild(tbody); scroll.appendChild(table); wrap.appendChild(scroll);
     return wrap;
-  }
-
-  // ---- client-side aggregation helpers (for drill-down) -----------------
-  function numv(v) { var x = Number(v); return isNaN(x) ? 0 : x; }
-  function sumRows(rows) {
-    var t = { spend: 0, impressions: 0, clicks: 0, link_clicks: 0, conv_started: 0,
-      conv_replied: 0, welcome_views: 0, new_contacts: 0, returning_contacts: 0,
-      total_contacts: 0, purchases: 0, purchase_value: 0 };
-    (rows || []).forEach(function (r) {
-      Object.keys(t).forEach(function (k) { t[k] += numv(r[k]); });
-    });
-    t.ctr = t.impressions > 0 ? +(t.clicks / t.impressions * 100).toFixed(2) : 0;
-    t.reply_rate = t.conv_started > 0 ? +(t.conv_replied / t.conv_started).toFixed(3) : 0;
-    t.cost_per_conv = t.conv_started > 0 ? Math.round(t.spend / t.conv_started) : null;
-    t.roas = (t.purchase_value > 0 && t.spend > 0) ? +(t.purchase_value / t.spend).toFixed(2) : null;
-    return t;
-  }
-  function groupBy(rows, key) {
-    var map = {};
-    (rows || []).forEach(function (r) {
-      var k = String(r[key] || '(none)');
-      (map[k] = map[k] || []).push(r);
-    });
-    return Object.keys(map).map(function (k) {
-      var t = sumRows(map[k]); t.key = k; t._rows = map[k]; return t;
-    }).sort(function (a, b) { return b.spend - a.spend; });
   }
 
   // ---- wiring -----------------------------------------------------------
@@ -450,28 +411,16 @@
       e.preventDefault();
       var p = $('#pwd').value.trim();
       if (!p) return;
-      // Apps Script can take 3-5s — show progress so the button doesn't feel dead.
       var btn = this.querySelector('button[type="submit"]');
-      btn.disabled = true;
-      btn.textContent = 'Đang mở…';
+      btn.disabled = true; btn.textContent = 'Đang mở…';
       tryLogin(p).then(function (ok) {
         if (!ok) { btn.disabled = false; btn.textContent = 'Mở dashboard'; }
       });
     });
-    $('#tabs').addEventListener('click', function (e) {
-      var b = e.target.closest('button[data-view]');
-      if (!b) return;
-      $('#tabs').querySelectorAll('button').forEach(function (x) { x.classList.remove('active'); });
-      b.classList.add('active');
-      state.view = b.getAttribute('data-view');
-      state.detail = null; // leaving/returning to a tab resets any drill-down
-      render();
-    });
-    $('#range').addEventListener('change', function (e) { state.range = e.target.value; render(); });
-    $('#refresh').addEventListener('click', render);
+    $('#range').addEventListener('change', function (e) { state.range = e.target.value; load(); });
+    $('#refresh').addEventListener('click', load);
     $('#logout').addEventListener('click', function () { clearPwd(); showGate(false); });
 
-    // Auto-login if a session password exists.
     if (pwd()) tryLogin(pwd()); else showGate(false);
   }
 

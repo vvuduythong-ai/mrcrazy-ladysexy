@@ -108,6 +108,12 @@ tr.clickable { cursor: pointer; }
 tr.clickable:hover { background: #eef3f7; }
 tr.clickable td:first-child { color: var(--brand); font-weight: 600; }
 .hint { margin: 0 0 8px; }
+.segbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 18px 0 4px; }
+.seglabel { color: var(--muted); font-size: 13px; font-weight: 600; margin-right: 2px; }
+.seg { cursor: pointer; border: 1px solid var(--line); background: var(--panel);
+  padding: 7px 16px; border-radius: 999px; font: inherit; font-weight: 600; color: var(--muted); }
+.seg:hover { background: #eef3f7; }
+.seg.active { background: var(--brand); color: #fff; border-color: var(--brand); }
 .backlink { background: #eef2f5; border: 1px solid var(--line); border-radius: 8px;
   padding: 7px 12px; font: inherit; cursor: pointer; margin-bottom: 12px; color: var(--brand); font-weight: 600; }
 .backlink:hover { background: #e2e8ee; }
