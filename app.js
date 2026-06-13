@@ -89,21 +89,35 @@
     s.hidden = false; s.textContent = msg;
   }
 
+  // In-memory cache of the last good response per view+range, so switching tabs is
+  // instant: paint the cached view immediately, then refresh silently in the background.
+  var viewCache = {};
+
+  function paint(host, res) {
+    state.settings = res.settings || state.settings;
+    $('#genAt').textContent = 'Cập nhật: ' + new Date(res.generatedAt).toLocaleString('vi-VN');
+    $('#kpiTarget').textContent = fmtVnd(state.settings.cost_per_message_target || 80000);
+    host.innerHTML = '';
+    var r = { overview: renderOverview, funnel: renderFunnel, pillar: renderBreakdown,
+      product: renderBreakdown, ta: renderBreakdown, ads: renderAds }[state.view];
+    r(host, res.data);
+  }
+
   function render() {
     var host = $('#view');
-    host.innerHTML = '<div class="loading">Đang tải…</div>';
-    setStatus('');
+    var key = state.view + '|' + state.range;
+    var cached = viewCache[key];
+    if (cached) { paint(host, cached); setStatus('Đang cập nhật…'); }
+    else { host.innerHTML = '<div class="loading">Đang tải…</div>'; setStatus(''); }
+
     api(state.view, state.range).then(function (res) {
-      if (!res || !res.ok) { showGate(true); return; }
-      state.settings = res.settings || state.settings;
-      $('#genAt').textContent = 'Cập nhật: ' + new Date(res.generatedAt).toLocaleString('vi-VN');
-      $('#kpiTarget').textContent = fmtVnd(state.settings.cost_per_message_target || 80000);
-      host.innerHTML = '';
-      var r = { overview: renderOverview, funnel: renderFunnel, pillar: renderBreakdown,
-        product: renderBreakdown, ta: renderBreakdown, ads: renderAds }[state.view];
-      r(host, res.data);
+      if (!res || !res.ok) { if (!cached) showGate(true); setStatus(''); return; }
+      viewCache[key] = res;
+      paint(host, res);
+      setStatus('');
     }).catch(function (e) {
-      host.innerHTML = '<div class="loading error">Lỗi tải dữ liệu: ' + e + '</div>';
+      setStatus('');
+      if (!cached) host.innerHTML = '<div class="loading error">Lỗi tải dữ liệu: ' + e + '</div>';
     });
   }
 
