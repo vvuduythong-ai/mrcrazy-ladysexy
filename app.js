@@ -212,7 +212,7 @@
       var hw = el('div', 'panel warn-block');
       hw.appendChild(el('h2', null, '⚠ ' + unmapped.length + ' ad sai tên (chưa map được sản phẩm) — sửa tên để vào đúng nhóm'));
       hw.appendChild(tableFrom(unmapped, [
-        { k: 'ad_name', t: 'Ad name', fmt: id, left: true },
+        { k: 'ad_name', t: 'Ad name', fmt: adLink, left: true, html: true },
         { k: 'campaign_name', t: 'Campaign', fmt: id, left: true },
         { k: 'spend', t: 'Chi', fmt: fmtVnd }
       ]));
@@ -255,7 +255,7 @@
       { k: 'conv_started', t: 'Tin nhắn', fmt: fmtNum },
       { k: 'cost_per_conv', t: 'Cost/tin', fmt: fmtVnd },
       { k: 'reply_rate', t: 'Reply', fmt: fmtPct },
-      { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true }
+      { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true, sortable: false }
     ], function (row) { state.detail = { by: state.groupBy, key: row.key }; renderExplore(); }));
 
     Charts.breakdownBar('exploreChart', groups, 'name');
@@ -306,35 +306,32 @@
 
     view.appendChild(funnelPanel('Phễu của ' + groupLabel(by).toLowerCase() + ' này', t));
 
-    // Secondary breakdown: product -> by pillar; pillar/ta -> by product
-    var subField = by === 'product_slug' ? 'pillar' : 'product_slug';
-    var subs = groupByField(rows, subField);
-    var sp = el('div', 'panel');
-    sp.appendChild(el('h2', null, 'Theo ' + groupLabel(subField) + ' (trong nhóm này)'));
-    view.appendChild(sp);
-    view.appendChild(tableFrom(subs, [
-      { k: 'name', t: groupLabel(subField), fmt: id, left: true },
-      { k: 'spend', t: 'Chi', fmt: fmtVnd },
-      { k: 'conv_started', t: 'Tin nhắn', fmt: fmtNum },
-      { k: 'cost_per_conv', t: 'Cost/tin', fmt: fmtVnd },
-      { k: 'reply_rate', t: 'Reply', fmt: fmtPct },
-      { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true }
-    ]));
+    // Secondary breakdowns: show this group split by each of the OTHER two dimensions
+    // (e.g. a TA detail shows both which Sản phẩm and which Pillar are running under it).
+    var DIMS = ['product_slug', 'pillar', 'ta'];
+    DIMS.filter(function (f) { return f !== by; }).forEach(function (subField) {
+      var subs = groupByField(rows, subField);
+      view.appendChild(tableFrom(subs, [
+        { k: 'name', t: groupLabel(subField), fmt: id, left: true },
+        { k: 'spend', t: 'Chi', fmt: fmtVnd },
+        { k: 'conv_started', t: 'Tin nhắn', fmt: fmtNum },
+        { k: 'cost_per_conv', t: 'Cost/tin', fmt: fmtVnd },
+        { k: 'reply_rate', t: 'Reply', fmt: fmtPct },
+        { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true, sortable: false }
+      ], null, 'Theo ' + groupLabel(subField) + ' (trong nhóm này)'));
+    });
 
     // Content / ad list
-    var cp = el('div', 'panel');
-    cp.appendChild(el('h2', null, 'Content / Ad (' + rows.length + ')'));
-    view.appendChild(cp);
     view.appendChild(tableFrom(rows, [
-      { k: 'ad_name', t: 'Ad', fmt: id, left: true },
+      { k: 'ad_name', t: 'Ad', fmt: adLink, left: true, html: true },
       { k: 'format', t: 'Format', fmt: dash, left: true },
       { k: 'pillar', t: 'Pillar', fmt: dash, left: true },
       { k: 'spend', t: 'Chi', fmt: fmtVnd },
       { k: 'conv_started', t: 'Tin nhắn', fmt: fmtNum },
       { k: 'cost_per_conv', t: 'Cost/tin', fmt: fmtVnd },
       { k: 'reply_rate', t: 'Reply', fmt: fmtPct },
-      { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true }
-    ]));
+      { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true, sortable: false }
+    ], null, 'Content / Ad (' + rows.length + ')'));
   }
 
   // ---- funnel -----------------------------------------------------------
@@ -383,6 +380,21 @@
   // ---- small render utils ----------------------------------------------
   function id(v) { return v; }
   function dash(v) { return v || '—'; }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+  // Ad name as a clickable preview link when Meta gave us a shareable link; plain
+  // (escaped) text otherwise. Used with html:true columns.
+  function adLink(v, row) {
+    var name = esc(v);
+    if (row && row.preview_url) {
+      return '<a class="adlink" href="' + esc(row.preview_url) + '" target="_blank" rel="noopener"' +
+        ' title="Mở bản xem trước quảng cáo">' + name + '</a>';
+    }
+    return name;
+  }
   function card(label, value, sub, cls, delta) {
     var c = el('div', 'card');
     c.appendChild(el('div', 'label', label));
@@ -395,12 +407,15 @@
   // coloring for cost-type metrics (a drop is an improvement). Returns null when
   // there's no comparable previous value.
   function deltaInfo(cur, prev, lowerIsBetter) {
-    if (prev == null || cur == null || isNaN(prev) || isNaN(cur) || prev === 0) return null;
+    if (prev == null || cur == null || isNaN(prev) || isNaN(cur)) return null;
+    // No baseline last period: flag as "new" if there's activity now, else nothing.
+    if (prev === 0) return cur > 0 ? { isNew: true } : null;
     var pct = (cur - prev) / Math.abs(prev) * 100;
     var good = pct === 0 ? null : (lowerIsBetter ? pct < 0 : pct > 0);
     return { pct: pct, good: good };
   }
   function deltaEl(d) {
+    if (d.isNew) return el('div', 'delta good', '★ mới <span class="delta-cap">vs kỳ trước</span>');
     var arrow = d.pct > 0 ? '▲' : d.pct < 0 ? '▼' : '–';
     var cls = d.good === null ? 'flat' : d.good ? 'good' : 'bad';
     return el('div', 'delta ' + cls,
@@ -426,27 +441,76 @@
     p.appendChild(boxx);
     return p;
   }
-  function tableFrom(rows, cols, onRowClick) {
+  function toNum(v) {
+    if (v === null || v === undefined || v === '') return null;
+    if (typeof v === 'number') return isNaN(v) ? null : v;
+    var n = Number(v);
+    return isNaN(n) ? null : n;
+  }
+  // Click a header to sort by that column. Numeric columns sort by value (N/A last);
+  // text columns sort alphabetically (vi locale). Columns can opt out with sortable:false.
+  function tableFrom(rows, cols, onRowClick, heading) {
+    rows = rows || [];
     var wrap = el('div', 'panel');
+    if (heading) wrap.appendChild(el('h2', null, heading));
     var scroll = el('div', 'table-scroll');
     var table = el('table');
     var thead = el('thead'), trh = el('tr');
-    cols.forEach(function (c) { trh.appendChild(el('th', c.left ? 'l' : null, c.t)); });
-    thead.appendChild(trh); table.appendChild(thead);
-    var tbody = el('tbody');
-    (rows || []).forEach(function (row) {
-      var tr = el('tr');
-      if (onRowClick) { tr.className = 'clickable'; tr.addEventListener('click', function () { onRowClick(row); }); }
-      cols.forEach(function (c) {
-        var val = c.fmt ? c.fmt(row[c.k], row) : row[c.k];
-        var td = el('td');
-        if (c.html) td.innerHTML = val; else td.textContent = val;
-        if (c.left) td.style.textAlign = 'left';
-        tr.appendChild(td);
-      });
-      tbody.appendChild(tr);
+    var sort = { idx: -1, dir: 1 };
+
+    cols.forEach(function (c, ci) {
+      var th = el('th', c.left ? 'l' : null, c.t);
+      if (c.sortable !== false) {
+        th.classList.add('sortable');
+        th.addEventListener('click', function () {
+          if (sort.idx === ci) sort.dir = -sort.dir;
+          else { sort.idx = ci; sort.dir = c.left ? 1 : -1; } // text asc, numbers desc first
+          render();
+        });
+      }
+      trh.appendChild(th);
     });
-    table.appendChild(tbody); scroll.appendChild(table); wrap.appendChild(scroll);
+    thead.appendChild(trh); table.appendChild(thead);
+    var tbody = el('tbody'); table.appendChild(tbody);
+
+    function sorted() {
+      if (sort.idx < 0) return rows.slice();
+      var key = cols[sort.idx].k;
+      return rows.slice().sort(function (a, b) {
+        var an = toNum(a[key]), bn = toNum(b[key]);
+        if (an === null && bn === null) {
+          return String(a[key] == null ? '' : a[key])
+            .localeCompare(String(b[key] == null ? '' : b[key]), 'vi') * sort.dir;
+        }
+        if (an === null) return 1;   // missing numeric value sinks to the bottom
+        if (bn === null) return -1;
+        return (an - bn) * sort.dir;
+      });
+    }
+
+    function render() {
+      var ths = trh.children;
+      for (var i = 0; i < ths.length; i++) {
+        ths[i].classList.remove('sort-asc', 'sort-desc');
+        if (i === sort.idx) ths[i].classList.add(sort.dir > 0 ? 'sort-asc' : 'sort-desc');
+      }
+      tbody.innerHTML = '';
+      sorted().forEach(function (row) {
+        var tr = el('tr');
+        if (onRowClick) { tr.className = 'clickable'; tr.addEventListener('click', function () { onRowClick(row); }); }
+        cols.forEach(function (c) {
+          var val = c.fmt ? c.fmt(row[c.k], row) : row[c.k];
+          var td = el('td');
+          if (c.html) td.innerHTML = val; else td.textContent = val;
+          if (c.left) td.style.textAlign = 'left';
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+    }
+
+    render();
+    scroll.appendChild(table); wrap.appendChild(scroll);
     return wrap;
   }
 
