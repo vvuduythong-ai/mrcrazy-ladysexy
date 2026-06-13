@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MCALS · Meta Ads Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Password gate -->
+  <div id="gate" class="gate">
+    <form id="gateForm" class="gate-card" autocomplete="off">
+      <h1>MR CRAZY &amp; LADY SEXY</h1>
+      <p class="muted">Meta Ads Dashboard</p>
+      <input id="pwd" type="password" placeholder="Mật khẩu" aria-label="Mật khẩu" />
+      <button type="submit">Mở dashboard</button>
+      <p id="gateErr" class="error" hidden>Sai mật khẩu.</p>
+    </form>
+  </div>
+
+  <!-- App -->
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="brand">MCALS <span class="muted">· Meta Ads</span></div>
+      <div class="controls">
+        <select id="range" aria-label="Khoảng thời gian">
+          <option value="7d">7 ngày</option>
+          <option value="30d" selected>30 ngày</option>
+        </select>
+        <button id="refresh" title="Tải lại">↻</button>
+        <button id="logout" title="Khoá">⎋</button>
+      </div>
+    </header>
+
+    <nav class="tabs" id="tabs">
+      <button data-view="overview" class="active">Tổng quan</button>
+      <button data-view="funnel">Phễu</button>
+      <button data-view="pillar">Pillar</button>
+      <button data-view="product">Sản phẩm</button>
+      <button data-view="ta">TA</button>
+      <button data-view="ads">Ad &amp; Data hygiene</button>
+    </nav>
+
+    <main id="main">
+      <div id="status" class="status" hidden></div>
+      <section id="view"></section>
+    </main>
+
+    <footer class="foot muted">
+      <span id="genAt"></span> · KPI: cost/tin nhắn ≤ <span id="kpiTarget">80.000₫</span>
+    </footer>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="config.js"></script>
+  <script src="recommend.js"></script>
+  <script src="charts.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
