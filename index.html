@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>MCALS · Meta Ads Dashboard</title>
+  <title>Mr Crazy &amp; Lady Sexy · Meta Ads Dashboard</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -21,12 +21,23 @@
   <!-- App -->
   <div id="app" hidden>
     <header class="topbar">
-      <div class="brand">MCALS <span class="muted">· Meta Ads</span></div>
+      <div class="brand">Mr Crazy &amp; Lady Sexy <span class="muted">· Meta Ads</span></div>
       <div class="controls">
         <select id="range" aria-label="Khoảng thời gian">
-          <option value="7d">7 ngày</option>
-          <option value="30d" selected>30 ngày</option>
+          <option value="today">Hôm nay</option>
+          <option value="yesterday">Hôm qua</option>
+          <option value="7d">7 ngày qua</option>
+          <option value="14d">14 ngày qua</option>
+          <option value="30d" selected>30 ngày qua</option>
+          <option value="this_month">Tháng này</option>
+          <option value="last_month">Tháng trước</option>
+          <option value="custom">Tùy chọn…</option>
         </select>
+        <span id="customRange" class="custom-range" hidden>
+          <input id="from" type="date" aria-label="Từ ngày" />
+          <span class="custom-range-sep">→</span>
+          <input id="to" type="date" aria-label="Đến ngày" />
+        </span>
         <button id="refresh" title="Tải lại">↻</button>
         <button id="logout" title="Khoá">⎋</button>
       </div>

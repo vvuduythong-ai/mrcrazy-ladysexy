@@ -60,6 +60,11 @@ body {
   width: 36px; height: 36px; border-radius: 8px; background: #eef2f5; font-size: 16px;
 }
 .controls button:hover { background: #e2e8ee; }
+.custom-range { display: inline-flex; align-items: center; gap: 6px; }
+.custom-range input[type="date"] {
+  padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; font: inherit; color: var(--ink);
+}
+.custom-range-sep { color: var(--muted); }
 
 /* Tabs */
 .tabs {
@@ -89,6 +94,12 @@ body {
 .card .sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
 .value.good { color: var(--good); }
 .value.bad { color: var(--bad); }
+/* Period-over-period delta */
+.delta { font-size: 12px; font-weight: 600; margin-top: 6px; display: flex; align-items: baseline; gap: 4px; }
+.delta.good { color: var(--good); }
+.delta.bad { color: var(--bad); }
+.delta.flat { color: var(--muted); }
+.delta .delta-cap { font-weight: 400; color: var(--muted); font-size: 11px; }
 
 .panel {
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
@@ -114,10 +125,26 @@ tr.clickable td:first-child { color: var(--brand); font-weight: 600; }
   padding: 7px 16px; border-radius: 999px; font: inherit; font-weight: 600; color: var(--muted); }
 .seg:hover { background: #eef3f7; }
 .seg.active { background: var(--brand); color: #fff; border-color: var(--brand); }
-.backlink { background: #eef2f5; border: 1px solid var(--line); border-radius: 8px;
-  padding: 7px 12px; font: inherit; cursor: pointer; margin-bottom: 12px; color: var(--brand); font-weight: 600; }
+.backlink { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 14px; font: inherit; cursor: pointer; color: var(--brand); font-weight: 600; }
 .backlink:hover { background: #e2e8ee; }
-.detail-title { font-size: 17px; margin: 4px 0 14px; }
+/* Detail drill-down: a tinted, bordered "detailed analysis" surface so it reads as
+   a distinct section, with the back button on its own header row (no longer cramped). */
+.detail-view {
+  background: #eaf0f6; border: 1px solid #d3deea; border-radius: 16px;
+  padding: 16px; margin-top: 18px;
+}
+.detail-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-bottom: 14px; flex-wrap: wrap;
+}
+.detail-badge {
+  font-size: 11px; font-weight: 700; letter-spacing: .4px; text-transform: uppercase;
+  color: var(--brand); background: #dbe6f2; border: 1px solid #c3d4e6;
+  padding: 4px 10px; border-radius: 999px;
+}
+.detail-title { font-size: 17px; margin: 2px 0 14px; }
+.detail-view .panel { margin-top: 12px; }
 .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
 .pill.good { background: #e6f6ee; color: var(--good); }
 .pill.bad { background: #fbe9e7; color: var(--bad); }

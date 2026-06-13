@@ -13,8 +13,13 @@
 
   var API = (window.APP_CONFIG && window.APP_CONFIG.APPS_SCRIPT_URL) || '';
   var PWD_KEY = 'mcals_pwd';
-  var state = { range: '30d', groupBy: 'product_slug', detail: null, settings: {} };
-  var cache = {}; // range -> { ads: res, overview: res }
+  var state = { range: '30d', from: '', to: '', groupBy: 'product_slug', detail: null, settings: {} };
+  var cache = {}; // rangeKey -> { ads: res, overview: res, prev: [adsRows] }
+
+  // A custom range's window depends on from/to, so the cache key must include them.
+  function rangeKey() {
+    return state.range === 'custom' ? 'custom:' + state.from + ':' + state.to : state.range;
+  }
 
   // ---- helpers ----------------------------------------------------------
   function $(sel) { return document.querySelector(sel); }
@@ -43,9 +48,13 @@
   }
 
   // ---- API --------------------------------------------------------------
-  function api(view, range) {
+  function api(view, compare) {
     var url = API + '?pwd=' + encodeURIComponent(pwd()) +
-      '&view=' + encodeURIComponent(view) + '&range=' + encodeURIComponent(range);
+      '&view=' + encodeURIComponent(view) + '&range=' + encodeURIComponent(state.range);
+    if (state.range === 'custom' && state.from && state.to) {
+      url += '&from=' + encodeURIComponent(state.from) + '&to=' + encodeURIComponent(state.to);
+    }
+    if (compare) url += '&compare=1';
     return fetch(url).then(function (r) { return r.json(); });
   }
 
@@ -61,7 +70,7 @@
 
   function tryLogin(p) {
     setPwd(p);
-    return api('ads', state.range).then(function (res) {
+    return api('ads').then(function (res) {
       if (res && res.ok) { showApp(); load(); return true; }
       clearPwd();
       showGate(res && res.error === 'unauthorized'
@@ -85,11 +94,12 @@
 
   function load() {
     var host = $('#view');
-    var c = cache[state.range];
+    var key = rangeKey();
+    var c = cache[key];
     if (c && c.ads) { renderPage(); setStatus('Đang cập nhật…'); }
     else { host.innerHTML = '<div class="loading">Đang tải…</div>'; setStatus(''); }
 
-    Promise.all([api('ads', state.range), api('overview', state.range)])
+    Promise.all([api('ads', true), api('overview')])
       .then(function (r) {
         var ads = r[0], ov = r[1];
         if (!ads || !ads.ok) {
@@ -97,7 +107,13 @@
           setStatus(''); return;
         }
         state.settings = ads.settings || state.settings;
-        cache[state.range] = { ads: ads, overview: (ov && ov.ok) ? ov : null };
+        cache[rangeKey()] = {
+          ads: ads,
+          overview: (ov && ov.ok) ? ov : null,
+          prev: ads.prev || null,
+          window: ads.window || null,
+          prevWindow: ads.prevWindow || null
+        };
         renderPage();
         setStatus('');
       })
@@ -147,8 +163,9 @@
   }
 
   // ---- page render ------------------------------------------------------
-  function adsRows() { return (cache[state.range] && cache[state.range].ads.data) || []; }
-  function overviewData() { var c = cache[state.range]; return (c && c.overview && c.overview.data) || null; }
+  function adsRows() { var c = cache[rangeKey()]; return (c && c.ads && c.ads.data) || []; }
+  function prevRows() { var c = cache[rangeKey()]; return (c && c.prev) || null; }
+  function overviewData() { var c = cache[rangeKey()]; return (c && c.overview && c.overview.data) || null; }
 
   function renderPage() {
     var host = $('#view');
@@ -158,16 +175,22 @@
 
     var rows = adsRows();
     var t = sumRows(rows);
+    var pr = prevRows();
+    var pt = pr ? sumRows(pr) : null;
     var target = Number(state.settings.cost_per_message_target || 80000);
 
-    // KPI cards
+    // KPI cards (with period-over-period delta when previous data is available)
     var cards = el('div', 'cards');
-    cards.appendChild(card('Tổng chi', fmtVnd(t.spend)));
-    cards.appendChild(card('Tin nhắn', fmtNum(t.conv_started), 'reply ' + fmtPct(t.reply_rate)));
+    cards.appendChild(card('Tổng chi', fmtVnd(t.spend), null, null,
+      pt && deltaInfo(t.spend, pt.spend, false)));
+    cards.appendChild(card('Tin nhắn', fmtNum(t.conv_started), 'reply ' + fmtPct(t.reply_rate), null,
+      pt && deltaInfo(t.conv_started, pt.conv_started, false)));
     cards.appendChild(card('Cost / tin nhắn', fmtVnd(t.cost_per_conv),
-      'mục tiêu ' + fmtVnd(target), (t.cost_per_conv != null && t.cost_per_conv <= target) ? 'good' : 'bad'));
+      'mục tiêu ' + fmtVnd(target), (t.cost_per_conv != null && t.cost_per_conv <= target) ? 'good' : 'bad',
+      pt && deltaInfo(t.cost_per_conv, pt.cost_per_conv, true)));
     cards.appendChild(card('Đơn (Meta)', t.purchases ? fmtNum(t.purchases) : 'N/A',
-      t.roas != null ? 'ROAS ' + t.roas : 'ROAS N/A'));
+      t.roas != null ? 'ROAS ' + t.roas : 'ROAS N/A',
+      null, pt && deltaInfo(t.purchases, pt.purchases, false)));
     host.appendChild(cards);
 
     // Overall funnel + diagnosis
@@ -244,38 +267,52 @@
   function renderDetail(box, by, key) {
     var rows = adsRows().filter(function (r) { return String(r[by]) === String(key); });
 
+    // Tinted container so the drill-down reads as a distinct "detailed analysis"
+    // section, with the back button given its own header row (no longer cramped).
+    var view = el('div', 'detail-view');
+    box.appendChild(view);
+
+    var head = el('div', 'detail-head');
     var back = el('button', 'backlink', '← Quay lại ' + groupLabel(by));
     back.addEventListener('click', function () { state.detail = null; renderExplore(); });
-    box.appendChild(back);
+    head.appendChild(back);
+    head.appendChild(el('span', 'detail-badge', 'Phân tích chi tiết'));
+    view.appendChild(head);
 
     var name = by === 'product_slug' ? ((rows[0] && rows[0].product_name) || key) : key;
-    box.appendChild(el('h2', 'detail-title', groupLabel(by) + ': ' + name));
+    view.appendChild(el('h2', 'detail-title', groupLabel(by) + ': ' + name));
 
     if (!rows.length) {
-      box.appendChild(el('p', 'muted', 'Không có ad nào trong khoảng thời gian đã chọn.'));
+      view.appendChild(el('p', 'muted', 'Không có ad nào trong khoảng thời gian đã chọn.'));
       return;
     }
 
     var t = sumRows(rows);
+    var pr = prevRows();
+    var pt = pr ? sumRows(pr.filter(function (r) { return String(r[by]) === String(key); })) : null;
     var target = Number(state.settings.cost_per_message_target || 80000);
     var cards = el('div', 'cards');
-    cards.appendChild(card('Tổng chi', fmtVnd(t.spend)));
-    cards.appendChild(card('Tin nhắn', fmtNum(t.conv_started)));
+    cards.appendChild(card('Tổng chi', fmtVnd(t.spend), null, null,
+      pt && deltaInfo(t.spend, pt.spend, false)));
+    cards.appendChild(card('Tin nhắn', fmtNum(t.conv_started), null, null,
+      pt && deltaInfo(t.conv_started, pt.conv_started, false)));
     cards.appendChild(card('Cost / tin nhắn', fmtVnd(t.cost_per_conv),
-      'mục tiêu ' + fmtVnd(target), (t.cost_per_conv != null && t.cost_per_conv <= target) ? 'good' : 'bad'));
+      'mục tiêu ' + fmtVnd(target), (t.cost_per_conv != null && t.cost_per_conv <= target) ? 'good' : 'bad',
+      pt && deltaInfo(t.cost_per_conv, pt.cost_per_conv, true)));
     cards.appendChild(card('Đơn (Meta)', t.purchases ? fmtNum(t.purchases) : 'N/A',
-      t.roas != null ? 'ROAS ' + t.roas : 'ROAS N/A'));
-    box.appendChild(cards);
+      t.roas != null ? 'ROAS ' + t.roas : 'ROAS N/A',
+      null, pt && deltaInfo(t.purchases, pt.purchases, false)));
+    view.appendChild(cards);
 
-    box.appendChild(funnelPanel('Phễu của ' + groupLabel(by).toLowerCase() + ' này', t));
+    view.appendChild(funnelPanel('Phễu của ' + groupLabel(by).toLowerCase() + ' này', t));
 
     // Secondary breakdown: product -> by pillar; pillar/ta -> by product
     var subField = by === 'product_slug' ? 'pillar' : 'product_slug';
     var subs = groupByField(rows, subField);
     var sp = el('div', 'panel');
     sp.appendChild(el('h2', null, 'Theo ' + groupLabel(subField) + ' (trong nhóm này)'));
-    box.appendChild(sp);
-    box.appendChild(tableFrom(subs, [
+    view.appendChild(sp);
+    view.appendChild(tableFrom(subs, [
       { k: 'name', t: groupLabel(subField), fmt: id, left: true },
       { k: 'spend', t: 'Chi', fmt: fmtVnd },
       { k: 'conv_started', t: 'Tin nhắn', fmt: fmtNum },
@@ -287,8 +324,8 @@
     // Content / ad list
     var cp = el('div', 'panel');
     cp.appendChild(el('h2', null, 'Content / Ad (' + rows.length + ')'));
-    box.appendChild(cp);
-    box.appendChild(tableFrom(rows, [
+    view.appendChild(cp);
+    view.appendChild(tableFrom(rows, [
       { k: 'ad_name', t: 'Ad', fmt: id, left: true },
       { k: 'format', t: 'Format', fmt: dash, left: true },
       { k: 'pillar', t: 'Pillar', fmt: dash, left: true },
@@ -346,12 +383,28 @@
   // ---- small render utils ----------------------------------------------
   function id(v) { return v; }
   function dash(v) { return v || '—'; }
-  function card(label, value, sub, cls) {
+  function card(label, value, sub, cls, delta) {
     var c = el('div', 'card');
     c.appendChild(el('div', 'label', label));
     c.appendChild(el('div', 'value' + (cls ? ' ' + cls : ''), value));
     if (sub) c.appendChild(el('div', 'sub', sub));
+    if (delta) c.appendChild(deltaEl(delta));
     return c;
+  }
+  // Percentage change vs the previous period. lowerIsBetter flips the good/bad
+  // coloring for cost-type metrics (a drop is an improvement). Returns null when
+  // there's no comparable previous value.
+  function deltaInfo(cur, prev, lowerIsBetter) {
+    if (prev == null || cur == null || isNaN(prev) || isNaN(cur) || prev === 0) return null;
+    var pct = (cur - prev) / Math.abs(prev) * 100;
+    var good = pct === 0 ? null : (lowerIsBetter ? pct < 0 : pct > 0);
+    return { pct: pct, good: good };
+  }
+  function deltaEl(d) {
+    var arrow = d.pct > 0 ? '▲' : d.pct < 0 ? '▼' : '–';
+    var cls = d.good === null ? 'flat' : d.good ? 'good' : 'bad';
+    return el('div', 'delta ' + cls,
+      arrow + ' ' + Math.abs(d.pct).toFixed(0) + '% <span class="delta-cap">vs kỳ trước</span>');
   }
   function verdictPill(_, row) {
     var c = Recommend.classify(row, state.settings);
@@ -398,6 +451,22 @@
   }
 
   // ---- wiring -----------------------------------------------------------
+  // Show the date pickers only for the custom range; seed a sensible 7-day window.
+  function syncCustomUI() {
+    var on = state.range === 'custom';
+    var box = $('#customRange');
+    if (box) box.hidden = !on;
+    if (on && (!state.from || !state.to)) {
+      var pad = function (n) { return (n < 10 ? '0' : '') + n; };
+      var iso = function (d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); };
+      var today = new Date();
+      state.to = iso(today);
+      state.from = iso(new Date(today.getTime() - 6 * 86400000));
+      $('#from').value = state.from;
+      $('#to').value = state.to;
+    }
+  }
+
   function init() {
     if (!API || API.indexOf('XXXX') !== -1) {
       showGate(false);
@@ -417,7 +486,14 @@
         if (!ok) { btn.disabled = false; btn.textContent = 'Mở dashboard'; }
       });
     });
-    $('#range').addEventListener('change', function (e) { state.range = e.target.value; load(); });
+    $('#range').addEventListener('change', function (e) {
+      state.range = e.target.value;
+      syncCustomUI();
+      // Wait for both dates before fetching a custom range.
+      if (state.range !== 'custom' || (state.from && state.to)) load();
+    });
+    $('#from').addEventListener('change', function (e) { state.from = e.target.value; if (state.to) load(); });
+    $('#to').addEventListener('change', function (e) { state.to = e.target.value; if (state.from) load(); });
     $('#refresh').addEventListener('click', load);
     $('#logout').addEventListener('click', function () { clearPwd(); showGate(false); });
 
