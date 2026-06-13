@@ -14,6 +14,8 @@
   --radius: 12px;
 }
 * { box-sizing: border-box; }
+/* The [hidden] attribute must win over rules that set display (e.g. .gate{display:grid}). */
+[hidden] { display: none !important; }
 html, body { margin: 0; }
 body {
   font-family: -apple-system, "Segoe UI", Roboto, "Noto Sans", Arial, sans-serif;
@@ -102,6 +104,14 @@ th:first-child, td:first-child { text-align: left; }
 th { color: var(--muted); font-weight: 600; cursor: pointer; user-select: none; }
 tbody tr:hover { background: #f8fafb; }
 .table-scroll { overflow-x: auto; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover { background: #eef3f7; }
+tr.clickable td:first-child { color: var(--brand); font-weight: 600; }
+.hint { margin: 0 0 8px; }
+.backlink { background: #eef2f5; border: 1px solid var(--line); border-radius: 8px;
+  padding: 7px 12px; font: inherit; cursor: pointer; margin-bottom: 12px; color: var(--brand); font-weight: 600; }
+.backlink:hover { background: #e2e8ee; }
+.detail-title { font-size: 17px; margin: 4px 0 14px; }
 .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
 .pill.good { background: #e6f6ee; color: var(--good); }
 .pill.bad { background: #fbe9e7; color: var(--bad); }
