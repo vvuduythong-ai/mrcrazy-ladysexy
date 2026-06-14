@@ -37,8 +37,12 @@ window.Charts = (function () {
     });
   }
 
-  /** Bar chart for a breakdown (cost/conv by key). */
-  function breakdownBar(id, rows, labelKey) {
+  /**
+   * Bar chart for a breakdown (cost/conv by key).
+   * onBarClick(index) — optional; called with the clicked bar's row index so the caller
+   * can drill into that group's detail view (mirrors clicking the table row).
+   */
+  function breakdownBar(id, rows, labelKey, onBarClick) {
     destroy(id);
     var c = ctx(id); if (!c) return;
     registry[id] = new Chart(c, {
@@ -51,7 +55,12 @@ window.Charts = (function () {
           backgroundColor: BRAND
         }]
       },
-      options: baseOpts({ yMoney: true })
+      options: baseOpts({
+        yMoney: true,
+        onClick: onBarClick ? function (evt, els) {
+          if (els && els.length) onBarClick(els[0].index);
+        } : null
+      })
     });
   }
 
@@ -76,7 +85,7 @@ window.Charts = (function () {
 
   function baseOpts(o) {
     o = o || {};
-    return {
+    var opts = {
       responsive: true, maintainAspectRatio: false,
       plugins: { legend: { display: false } },
       scales: {
@@ -90,6 +99,14 @@ window.Charts = (function () {
         }
       }
     };
+    if (o.onClick) {
+      opts.onClick = o.onClick;
+      // Pointer cursor when hovering a clickable element.
+      opts.onHover = function (e, els) {
+        if (e && e.native && e.native.target) e.native.target.style.cursor = els.length ? 'pointer' : 'default';
+      };
+    }
+    return opts;
   }
 
   return { trendLine: trendLine, breakdownBar: breakdownBar, spendShare: spendShare, destroy: destroy };
