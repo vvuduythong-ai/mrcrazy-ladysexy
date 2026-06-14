@@ -5,7 +5,7 @@
  *   SCALE     cost/conv <= target AND enough volume     -> scale budget / clone winner
  *   CUT/FIX   cost/conv > target * cut_factor AND spent  -> turn off / change creative
  *   FIX_CONV  many started but reply_rate < benchmark    -> check greeting / reply speed
- *   FIX_CLOSE many replied but few orders                -> check closing/price (or attribution)
+ *   FIX_CLOSE many replied but few orders                -> check closing/price
  *   DATA      mapped=FALSE                               -> fix the ad name
  *
  * "Enough volume" guards against calling winners/losers on tiny samples.
@@ -66,12 +66,11 @@ window.Recommend = (function () {
       };
     }
     // FIX closing — conversations work (healthy reply rate) but no orders show. Likely a
-    // closing/price issue OR missing attribution. Only after SCALE so winners aren't flagged.
+    // closing/price issue. Only after SCALE so winners aren't flagged.
     if (replied >= t.minConv && replyRate >= t.replyBench && purchases === 0) {
       return {
         tag: 'FIX_CLOSE', level: 'fix',
-        reason: 'Có ' + replied + ' khách nhắn lại (reply rate ok) nhưng 0 đơn Meta ghi nhận. ' +
-          'Soi khâu chốt/giá — hoặc thiếu attribution (cần nguồn đơn thật, Phase 5).'
+        reason: 'Có ' + replied + ' khách nhắn lại (reply rate ok) nhưng 0 đơn Meta ghi nhận. Soi khâu chốt/giá.'
       };
     }
     return { tag: 'OK', level: 'warn', reason: 'Trong ngưỡng, chưa cần hành động.' };
