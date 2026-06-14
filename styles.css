@@ -165,6 +165,18 @@ tr.clickable td:first-child { color: var(--brand); font-weight: 600; }
 @media (max-width: 560px) { .funnel-row { grid-template-columns: 110px 1fr 86px; } }
 .funnel-bar { height: 30px; background: var(--brand); border-radius: 6px; min-width: 2px; }
 .funnel-meta { font-size: 12px; color: var(--muted); text-align: right; }
+/* Period-over-period delta chips inside the funnel + cost line */
+.fdelta { display: block; font-size: 11px; font-weight: 600; margin-top: 2px; }
+.fdelta.good { color: var(--good); }
+.fdelta.bad { color: var(--bad); }
+.fdelta.flat { color: var(--muted); }
+.funnel-cost {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
+}
+.funnel-cost-label { color: var(--muted); font-size: 13px; font-weight: 600; }
+.funnel-cost-val { font-size: 18px; font-weight: 700; }
+.funnel-cost .fdelta { display: inline; margin-top: 0; }
 
 .foot { padding: 16px; text-align: center; font-size: 12px; }
 .warn-block { background: #fbe9e7; border-color: #f3c4bd; }
