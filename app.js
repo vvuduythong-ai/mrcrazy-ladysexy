@@ -150,7 +150,7 @@
     return Object.keys(map).map(function (k) {
       var t = sumRows(map[k]);
       t.key = k;
-      t.name = field === 'product_slug' ? (map[k][0].product_name || k) : k;
+      t.name = displayName(field, k, map[k][0]);
       t._rows = map[k];
       return t;
     }).sort(function (a, b) { return b.spend - a.spend; });
@@ -161,6 +161,15 @@
     { field: 'pillar', label: 'Pillar' },
     { field: 'ta', label: 'TA' }
   ];
+  // TA codes -> full display names (codes stay the grouping key; only the label changes).
+  var TA_LABELS = { BW: 'Business Women', SD: 'Summer Dawn', BJ: 'Bejeweled' };
+  function taLabel(code) { return TA_LABELS[String(code).toUpperCase()] || code; }
+  // Display name for a grouped row: product name, TA full name, or the key as-is.
+  function displayName(field, key, row) {
+    if (field === 'product_slug') return (row && row.product_name) || key;
+    if (field === 'ta') return taLabel(key);
+    return key;
+  }
   function groupLabel(field) {
     for (var i = 0; i < GROUPS.length; i++) if (GROUPS[i].field === field) return GROUPS[i].label;
     return field;
@@ -280,7 +289,7 @@
     head.appendChild(el('span', 'detail-badge', 'Phân tích chi tiết'));
     view.appendChild(head);
 
-    var name = by === 'product_slug' ? ((rows[0] && rows[0].product_name) || key) : key;
+    var name = displayName(by, key, rows[0]);
     view.appendChild(el('h2', 'detail-title', groupLabel(by) + ': ' + name));
 
     if (!rows.length) {
