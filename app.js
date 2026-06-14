@@ -46,6 +46,9 @@
     if (v === null || v === undefined || v === '') return 'N/A';
     return (Number(v) * 100).toFixed(0) + '%';
   }
+  // Orders/revenue: show N/A (not "0") when Meta recorded nothing — never style 0 as a result.
+  function fmtOrders(v) { return numv(v) > 0 ? fmtNum(v) : 'N/A'; }
+  function fmtRev(v) { return numv(v) > 0 ? fmtVnd(v) : 'N/A'; }
 
   // ---- API --------------------------------------------------------------
   function api(view, compare) {
@@ -99,9 +102,9 @@
     if (c && c.ads) { renderPage(); setStatus('Đang cập nhật…'); }
     else { host.innerHTML = '<div class="loading">Đang tải…</div>'; setStatus(''); }
 
-    Promise.all([api('ads', true), api('overview')])
+    Promise.all([api('ads', true), api('overview'), api('activity')])
       .then(function (r) {
-        var ads = r[0], ov = r[1];
+        var ads = r[0], ov = r[1], act = r[2];
         if (!ads || !ads.ok) {
           if (!c) showGate(ads && ads.error === 'unauthorized' ? 'Sai mật khẩu.' : true);
           setStatus(''); return;
@@ -110,6 +113,7 @@
         cache[rangeKey()] = {
           ads: ads,
           overview: (ov && ov.ok) ? ov : null,
+          activity: (act && act.ok) ? act : null,
           prev: ads.prev || null,
           window: ads.window || null,
           prevWindow: ads.prevWindow || null
@@ -166,6 +170,7 @@
   function adsRows() { var c = cache[rangeKey()]; return (c && c.ads && c.ads.data) || []; }
   function prevRows() { var c = cache[rangeKey()]; return (c && c.prev) || null; }
   function overviewData() { var c = cache[rangeKey()]; return (c && c.overview && c.overview.data) || null; }
+  function activityData() { var c = cache[rangeKey()]; return (c && c.activity && c.activity.data) || []; }
 
   function renderPage() {
     var host = $('#view');
@@ -206,23 +211,13 @@
       Charts.trendLine('trendChart', ov.trend);
     }
 
-    // Data hygiene
-    var unmapped = rows.filter(function (r) { return !r.mapped; });
-    if (unmapped.length) {
-      var hw = el('div', 'panel warn-block');
-      hw.appendChild(el('h2', null, '⚠ ' + unmapped.length + ' ad sai tên (chưa map được sản phẩm) — sửa tên để vào đúng nhóm'));
-      hw.appendChild(tableFrom(unmapped, [
-        { k: 'ad_name', t: 'Ad name', fmt: adLink, left: true, html: true },
-        { k: 'campaign_name', t: 'Campaign', fmt: id, left: true },
-        { k: 'spend', t: 'Chi', fmt: fmtVnd }
-      ]));
-      host.appendChild(hw);
-    }
-
     // Explore section (swappable: list <-> detail)
     var explore = el('div'); explore.id = 'explore';
     host.appendChild(explore);
     renderExplore();
+
+    // Activity Log — pinned to the very bottom (occasional-check reference).
+    host.appendChild(activityPanel());
   }
 
   function renderExplore() {
@@ -255,6 +250,8 @@
       { k: 'conv_started', t: 'Tin nhắn', fmt: fmtNum },
       { k: 'cost_per_conv', t: 'Cost/tin', fmt: fmtVnd },
       { k: 'reply_rate', t: 'Reply', fmt: fmtPct },
+      { k: 'purchases', t: 'Đơn', fmt: fmtOrders },
+      { k: 'purchase_value', t: 'Doanh thu', fmt: fmtRev },
       { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true, sortable: false }
     ], function (row) { state.detail = { by: state.groupBy, key: row.key }; renderExplore(); }));
 
@@ -317,6 +314,8 @@
         { k: 'conv_started', t: 'Tin nhắn', fmt: fmtNum },
         { k: 'cost_per_conv', t: 'Cost/tin', fmt: fmtVnd },
         { k: 'reply_rate', t: 'Reply', fmt: fmtPct },
+        { k: 'purchases', t: 'Đơn', fmt: fmtOrders },
+        { k: 'purchase_value', t: 'Doanh thu', fmt: fmtRev },
         { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true, sortable: false }
       ], null, 'Theo ' + groupLabel(subField) + ' (trong nhóm này)'));
     });
@@ -330,6 +329,8 @@
       { k: 'conv_started', t: 'Tin nhắn', fmt: fmtNum },
       { k: 'cost_per_conv', t: 'Cost/tin', fmt: fmtVnd },
       { k: 'reply_rate', t: 'Reply', fmt: fmtPct },
+      { k: 'purchases', t: 'Đơn', fmt: fmtOrders },
+      { k: 'purchase_value', t: 'Doanh thu', fmt: fmtRev },
       { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true, sortable: false }
     ], null, 'Content / Ad (' + rows.length + ')'));
   }
@@ -441,6 +442,58 @@
     p.appendChild(boxx);
     return p;
   }
+  // ---- activity log -----------------------------------------------------
+  // Category -> pill color (same pill classes the rest of the dashboard uses).
+  var ACT_PILL = { 'Tạo': 'scale', 'Xoá': 'cut', 'Ngân sách': 'warn', 'Trạng thái': 'fix', 'Khác': 'warn' };
+
+  // event_time is an ISO-ish string ("2026-06-12T10:30:00+0700"); split into a day
+  // heading + a HH:mm stamp. Falls back to the raw date slice if it won't parse.
+  function actTimeParts(iso) {
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return { day: String(iso).slice(0, 10), time: '' };
+    return {
+      day: d.toLocaleDateString('vi-VN', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }),
+      time: d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+    };
+  }
+
+  // Activity Log panel — auto-collected Meta change history, pinned to the page bottom.
+  function activityPanel() {
+    var acts = activityData();
+    var p = el('div', 'panel activity-panel');
+    var head = el('div', 'activity-head');
+    head.appendChild(el('h2', null, '🗒 Nhật ký thay đổi Meta Ads'));
+    head.appendChild(el('span', 'muted activity-count', acts.length + ' thay đổi trong kỳ'));
+    p.appendChild(head);
+
+    if (!acts.length) {
+      p.appendChild(el('p', 'muted', 'Chưa ghi nhận thay đổi nào trong khoảng thời gian này.'));
+      return p;
+    }
+
+    // Rows arrive newest-first from the API; insert a heading each time the day changes.
+    var lastDay = null;
+    var list = el('div', 'activity-list');
+    acts.forEach(function (a) {
+      var tp = actTimeParts(a.event_time);
+      if (tp.day !== lastDay) { list.appendChild(el('div', 'activity-day', tp.day)); lastDay = tp.day; }
+
+      var item = el('div', 'activity-item');
+      var cat = a.category || 'Khác';
+      var title = el('div', 'activity-title');
+      title.appendChild(el('span', 'pill ' + (ACT_PILL[cat] || 'warn'), esc(cat)));
+      title.appendChild(el('span', 'activity-label', esc(a.event_label || cat)));
+      item.appendChild(title);
+
+      if (a.object_name) item.appendChild(el('div', 'activity-obj', esc(a.object_name)));
+      var meta = [a.object_type, a.actor_name].filter(Boolean).join(' · ');
+      item.appendChild(el('div', 'activity-meta muted', esc(meta) + (tp.time ? ' · ' + tp.time : '')));
+      list.appendChild(item);
+    });
+    p.appendChild(list);
+    return p;
+  }
+
   function toNum(v) {
     if (v === null || v === undefined || v === '') return null;
     if (typeof v === 'number') return isNaN(v) ? null : v;
