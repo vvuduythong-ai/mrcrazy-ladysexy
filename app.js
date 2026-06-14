@@ -198,8 +198,8 @@
       null, pt && deltaInfo(t.purchases, pt.purchases, false)));
     host.appendChild(cards);
 
-    // Overall funnel + diagnosis
-    host.appendChild(funnelPanel('Phễu Messenger (toàn bộ)', t));
+    // Overall funnel + diagnosis (with period-over-period comparison when available)
+    host.appendChild(funnelPanel('Phễu Messenger (toàn bộ)', t, pt));
 
     // Trend
     var ov = overviewData();
@@ -255,7 +255,11 @@
       { k: 'verdict', t: 'Đề xuất', fmt: verdictPill, html: true, sortable: false }
     ], function (row) { state.detail = { by: state.groupBy, key: row.key }; renderExplore(); }));
 
-    Charts.breakdownBar('exploreChart', groups, 'name');
+    // Clicking a bar drills into that group's detail view, same as clicking its table row.
+    Charts.breakdownBar('exploreChart', groups, 'name', function (i) {
+      var g = groups[i];
+      if (g) { state.detail = { by: state.groupBy, key: g.key }; renderExplore(); }
+    });
 
     var recs = Recommend.summarize(groups, state.settings, 'name');
     if (recs.length) box.appendChild(recsPanel(recs));
@@ -301,7 +305,7 @@
       null, pt && deltaInfo(t.purchases, pt.purchases, false)));
     view.appendChild(cards);
 
-    view.appendChild(funnelPanel('Phễu của ' + groupLabel(by).toLowerCase() + ' này', t));
+    view.appendChild(funnelPanel('Phễu của ' + groupLabel(by).toLowerCase() + ' này', t, pt));
 
     // Secondary breakdowns: show this group split by each of the OTHER two dimensions
     // (e.g. a TA detail shows both which Sản phẩm and which Pillar are running under it).
@@ -336,15 +340,26 @@
   }
 
   // ---- funnel -----------------------------------------------------------
-  function funnelPanel(title, t) {
+  // Compact delta chip for the funnel (vs the previous period). Shown under each stage
+  // value and next to cost/tin nhắn. Returns null when there's no comparable prior value.
+  function stageDeltaEl(d) {
+    if (!d) return null;
+    if (d.isNew) return el('span', 'fdelta good', '★ mới vs kỳ trước');
+    var arrow = d.pct > 0 ? '▲' : d.pct < 0 ? '▼' : '–';
+    var cls = d.good === null ? 'flat' : d.good ? 'good' : 'bad';
+    return el('span', 'fdelta ' + cls, arrow + ' ' + Math.abs(d.pct).toFixed(0) + '% vs kỳ trước');
+  }
+
+  // funnelPanel(title, t, pt): pt = previous-period totals (nullable) for the comparison.
+  function funnelPanel(title, t, pt) {
     var p = el('div', 'panel');
     p.appendChild(el('h2', null, title));
     var stages = [
-      { stage: 'Impressions', value: t.impressions },
-      { stage: 'Clicks', value: t.clicks },
-      { stage: 'Tin nhắn bắt đầu', value: t.conv_started },
-      { stage: 'Khách nhắn lại', value: t.conv_replied },
-      { stage: 'Đơn (Meta)', value: t.purchases }
+      { stage: 'Impressions', value: t.impressions, prev: pt ? pt.impressions : null },
+      { stage: 'Clicks', value: t.clicks, prev: pt ? pt.clicks : null },
+      { stage: 'Tin nhắn bắt đầu', value: t.conv_started, prev: pt ? pt.conv_started : null },
+      { stage: 'Khách nhắn lại', value: t.conv_replied, prev: pt ? pt.conv_replied : null },
+      { stage: 'Đơn (Meta)', value: t.purchases, prev: pt ? pt.purchases : null }
     ];
     var max = Math.max.apply(null, stages.map(function (s) { return s.value; }).concat([1]));
     var fn = el('div', 'funnel');
@@ -356,10 +371,26 @@
       bar.style.width = Math.max(2, (s.value / max) * 100) + '%'; bw.appendChild(bar);
       row.appendChild(bw);
       var drop = prev && prev > 0 ? ' · ' + Math.round((1 - s.value / prev) * 100) + '% rớt' : '';
-      row.appendChild(el('div', 'funnel-meta', fmtNum(s.value) + drop));
+      var meta = el('div', 'funnel-meta');
+      meta.appendChild(el('div', null, fmtNum(s.value) + drop));
+      // More volume at each stage is better -> lowerIsBetter = false.
+      var de = stageDeltaEl(pt ? deltaInfo(s.value, s.prev, false) : null);
+      if (de) meta.appendChild(de);
+      row.appendChild(meta);
       fn.appendChild(row); prev = s.value;
     });
     p.appendChild(fn);
+
+    // Cost/tin nhắn summary line with its own period-over-period delta (lower = better).
+    if (t.cost_per_conv != null) {
+      var cost = el('div', 'funnel-cost');
+      cost.appendChild(el('span', 'funnel-cost-label', 'Cost / tin nhắn'));
+      cost.appendChild(el('span', 'funnel-cost-val', fmtVnd(t.cost_per_conv)));
+      var cde = stageDeltaEl(pt ? deltaInfo(t.cost_per_conv, pt.cost_per_conv, true) : null);
+      if (cde) cost.appendChild(cde);
+      p.appendChild(cost);
+    }
+
     var dg = funnelDiagnosis(t);
     var diag = el('div', 'rec'); diag.style.marginTop = '12px';
     diag.appendChild(el('span', 'pill ' + (dg.level === 'scale' ? 'scale' : dg.level === 'fix' ? 'fix' : 'warn'), 'Phễu'));
@@ -374,7 +405,7 @@
     if (t.conv_started === 0) return { level: 'warn', text: 'Chưa có tin nhắn — chưa đủ dữ liệu để chẩn đoán phễu.' };
     if (t.reply_rate < bench) return { level: 'fix', text: 'Rớt mạnh ở KHÁCH NHẮN LẠI: reply rate ' + fmtPct(t.reply_rate) + ' < benchmark ' + fmtPct(bench) + '. Soi lời chào / tốc độ rep / chất lượng traffic.' };
     if (t.cost_per_conv != null && t.cost_per_conv > target) return { level: 'fix', text: 'Tin nhắn đắt: ' + fmtVnd(t.cost_per_conv) + ' > mục tiêu ' + fmtVnd(target) + '. Khâu Click→Tin nhắn chưa hiệu quả (creative/đối tượng).' };
-    if (t.purchases === 0 && t.conv_replied >= 3) return { level: 'fix', text: 'Hội thoại tốt nhưng 0 đơn (Meta ghi nhận). Soi khâu CHỐT/giá — hoặc thiếu attribution.' };
+    if (t.purchases === 0 && t.conv_replied >= 3) return { level: 'fix', text: 'Hội thoại tốt nhưng 0 đơn (Meta ghi nhận). Soi khâu CHỐT/giá.' };
     return { level: 'scale', text: 'Phễu khỏe: tin nhắn rẻ, reply rate tốt. Cân nhắc tăng ngân sách / nhân bản.' };
   }
 
